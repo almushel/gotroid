@@ -20,6 +20,7 @@ type Entity struct {
 	Collider                         rl.Rectangle
 	Color                            rl.Color
 	PhysicsEnabled, CollisionEnabled bool
+	Grounded                         bool
 }
 
 func TranslateRect(r rl.Rectangle, offset rl.Vector2) rl.Rectangle {
@@ -52,16 +53,34 @@ func ScaleVector2(v rl.Vector2, scale float32) rl.Vector2 {
 	}
 }
 
+func MagnitudeVector2(v rl.Vector2) float32 {
+	var x float64 = float64(v.X)
+	var y float64 = float64(v.Y)
+
+	return float32(math.Hypot(x, y))
+}
+
 func NormalizeVector2(v rl.Vector2) rl.Vector2 {
 	if v.X == 0 && v.Y == 0 {
 		return v
 	}
-	magnitude := math.Sqrt(float64(v.X*v.X) + float64(v.Y*v.Y))
+	magnitude := MagnitudeVector2(v)
 
 	return rl.Vector2{
-		X: v.X / float32(magnitude),
-		Y: v.Y / float32(magnitude),
+		X: v.X / (magnitude),
+		Y: v.Y / (magnitude),
 	}
+}
+
+func AbsVector2(v rl.Vector2) rl.Vector2 {
+	if v.X < 0 {
+		v.X *= -1
+	}
+	if v.Y < 0 {
+		v.Y *= -1
+	}
+
+	return v
 }
 
 func main() {
@@ -90,13 +109,37 @@ func main() {
 			PhysicsEnabled: false, CollisionEnabled: true,
 			Color: rl.Yellow,
 		})
+
+		entities = append(entities, Entity{
+			Position: tilePosition,
+			Collider: rl.Rectangle{
+				X: 0, Y: -150,
+				Width: 50, Height: 50,
+			},
+			PhysicsEnabled: false, CollisionEnabled: true,
+			Color: rl.Yellow,
+		})
+
+		if i == 0 || i == 7 {
+			for e := 0; e < 2; e++ {
+				entities = append(entities, Entity{
+					Position: tilePosition,
+					Collider: rl.Rectangle{
+						X: 0, Y: -50 - 50*float32(e),
+						Width: 50, Height: 50,
+					},
+					PhysicsEnabled: false, CollisionEnabled: true,
+					Color: rl.Yellow,
+				})
+			}
+		}
 		tilePosition.X += 50
 	}
 
 	// playerIndex := len(entities)-1
 
-	const playerAcceleration float32 = 4
-	const jumpAcceleration float32 = 500
+	const playerAcceleration float32 = 1000
+	const jumpAcceleration float32 = 700
 	const airResistance float32 = 1
 	const friction float32 = 3
 	const gravity float32 = 2.5
@@ -112,15 +155,20 @@ func main() {
 		for i := range entities {
 			entity := &entities[i]
 			if entity.Type == ENTITY_TYPE_PLAYER {
-				movement := NormalizeVector2(dPad)
-				if rl.IsKeyDown(rl.KeyA) {
-					movement.X -= playerAcceleration
-				}
-				if rl.IsKeyDown(rl.KeyD) {
-					movement.X += playerAcceleration
+				accel := playerAcceleration * dt
+				if !entity.Grounded {
+					accel /= 2
 				}
 
-				if rl.IsKeyPressed(rl.KeyW) {
+				movement := NormalizeVector2(dPad)
+				if rl.IsKeyDown(rl.KeyA) {
+					movement.X -= accel
+				}
+				if rl.IsKeyDown(rl.KeyD) {
+					movement.X += accel
+				}
+
+				if rl.IsKeyPressed(rl.KeyW) && entity.Grounded {
 					movement.Y -= jumpAcceleration
 				}
 
@@ -132,10 +180,10 @@ func main() {
 
 			if entity.PhysicsEnabled {
 				entity.Velocity = AddVector2(entity.Velocity, rl.Vector2{X: 0, Y: gravity})
-				newPosition := AddVector2(
-					entity.Position,
-					ScaleVector2(entity.Velocity, dt),
-				)
+				entity.Grounded = false
+
+				velocityRemaining := ScaleVector2(entity.Velocity, dt)
+				newPosition := AddVector2(entity.Position, velocityRemaining)
 
 				var overlap rl.Vector2
 				if entity.CollisionEnabled {
@@ -148,17 +196,24 @@ func main() {
 							TranslateRect(entity.Collider, newPosition),
 							TranslateRect(entities[e].Collider, entities[e].Position),
 						) {
-							collision := rl.GetCollisionRec(
-								TranslateRect(entity.Collider, newPosition),
-								TranslateRect(entities[e].Collider, entities[e].Position),
-							)
-							collisionDirection := NormalizeVector2(SubtractVector2(rl.Vector2{X: collision.X, Y: collision.Y}, newPosition))
+							r1 := TranslateRect(entity.Collider, newPosition)
+							r2 := TranslateRect(entities[e].Collider, entities[e].Position)
+							collision := rl.GetCollisionRec(r1, r2)
+
+							c1 := rl.Vector2{X: r1.X + r1.Width/2, Y: r1.Y + r1.Height/2}
+							c2 := rl.Vector2{X: r2.X + r2.Width/2, Y: r2.Y + r2.Height/2}
+							delta := SubtractVector2(c2, c1)
+
+							collisionDirection := NormalizeVector2(delta)
+							if collisionDirection.Y > 0 {
+								entity.Grounded = true
+							}
 
 							if collision.Width < collision.Height {
-								overlap.X -= collision.Width * collisionDirection.X
+								overlap.X -= collisionDirection.X
 								newPosition.X -= collision.Width * collisionDirection.X
 							} else {
-								overlap.Y -= collision.Height * collisionDirection.Y
+								overlap.Y -= collisionDirection.Y
 								newPosition.Y -= collision.Height * collisionDirection.Y
 							}
 						}
@@ -167,7 +222,8 @@ func main() {
 
 				entity.Position = newPosition
 				if overlap.X != 0 || overlap.Y != 0 {
-					entity.Velocity = AddVector2(entity.Velocity, overlap)
+					v := AbsVector2(entity.Velocity)
+					entity.Velocity = AddVector2(entity.Velocity, rl.Vector2{X: overlap.X * v.X / 2, Y: overlap.Y * v.Y / 2})
 					entity.Velocity = ScaleVector2(entity.Velocity, 1.0-(friction*dt))
 				} else {
 					entity.Velocity = ScaleVector2(entity.Velocity, 1.0-(airResistance*dt))
@@ -180,6 +236,7 @@ func main() {
 				entity.Rotation, entity.Color,
 			)
 		}
+
 		rl.EndDrawing()
 	}
 
